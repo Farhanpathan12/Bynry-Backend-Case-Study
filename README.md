@@ -1,19 +1,37 @@
-Bynry Case Study: StockFlow Inventory Management
-Role: Backend Engineering Intern Candidate: Farhan Pathan
+Bynry Case Study: StockFlow Inventory Management System
+Role: Backend Engineering Intern
 
-Part 1: Code Review & Debugging (30 minutes)
+Candidate: Farhan Pathan
+
+📌 Table of Contents
+Part 1: Code Review & Debugging
+
+Part 2: Database Design
+
+Part 3: API Implementation
+
+🛠️ Part 1: Code Review & Debugging
 1. Identified Issues
 Based on the provided Flask API endpoint, here are the critical technical and business logic flaws:
-Lack of Database Transaction (Atomicity): The code calls db.session.commit() twice. If the Product creation succeeds but the Inventory creation fails, the database is left in an inconsistent state (a product with no initial inventory).
-Data Model Flaw (warehouse_id in Product): The requirements explicitly state "Products can exist in multiple warehouses". Storing warehouse_id directly inside the Product model implies a 1-to-Many relationship, which breaks the business logic. It should only exist in the Inventory junction table.
+
+Lack of Database Transaction (Atomicity): The code calls db.session.commit() twice. If the Product creation succeeds but the Inventory creation fails, the database is left in an inconsistent state (an orphaned product with no initial inventory).
+
+Data Model Flaw (warehouse_id in Product): The requirements explicitly state "Products can exist in multiple warehouses". Storing warehouse_id directly inside the Product model implies a strict 1-to-Many relationship, which breaks the core business logic. It should only exist in the Inventory junction table.
+
 Missing Error Handling & Validation: There is no try-except block to catch database errors. Furthermore, using data['key'] for optional fields will throw a KeyError and crash the server with a 500 Internal Server Error if the payload omits them.
+
 Missing SKU Uniqueness Check: The system requires SKUs to be unique, but the code blindly inserts data without checking if the SKU already exists.
+
 2. Impact in Production
 Data Corruption: "Orphaned" products without inventory records will clutter the database and cause issues in reporting and frontend UI.
-System Crashes: Missing payload keys will lead to unhandled exceptions, degrading user experience.
+
+System Crashes: Missing payload keys will lead to unhandled exceptions, degrading the user experience.
+
 Business Logic Failure: The system will fail to allow the same product to be stocked in multiple warehouses because it's hardcoded to a single warehouse at the product level.
+
 3. Provided Fix
-Here is the refactored, production-ready code:
+Here is the refactored, production-ready Python/Flask code:
+
 Python
 @app.route('/api/products', methods=['POST'])
 def create_product():
@@ -55,11 +73,9 @@ def create_product():
 
     except Exception as e:
         db.session.rollback() # Revert all changes if anything fails
-        # Log error here in a real production system
+        # In a real app, log the error 'e' here
         return {"error": "An internal server error occurred"}, 500
-
-
-Part 2: Database Design (25 minutes)
+🗄️ Part 2: Database Design
 1. Schema Design (SQL DDL Notation)
 SQL
 -- Core Entities
@@ -98,7 +114,7 @@ CREATE TABLE product_bundles (
     PRIMARY KEY (bundle_product_id, component_product_id)
 );
 
--- Inventory & Tracking
+-- Inventory & Tracking (Junction Table)
 CREATE TABLE inventory (
     id UUID PRIMARY KEY,
     product_id UUID REFERENCES products(id),
@@ -110,6 +126,7 @@ CREATE TABLE inventory (
     UNIQUE(product_id, warehouse_id) -- Prevent duplicate tracking rows
 );
 
+-- Audit Trail
 CREATE TABLE inventory_logs (
     id UUID PRIMARY KEY,
     inventory_id UUID REFERENCES inventory(id),
@@ -117,33 +134,41 @@ CREATE TABLE inventory_logs (
     reason VARCHAR(255),
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
-
-2. Missing Requirements (Questions for Product Team)
+2. Missing Requirements Identified (Questions for Product Team)
 Bundle Logistics: When a bundle is sold, does it deduct from a pre-assembled "bundle inventory", or does it dynamically deduct the individual components from the general stock?
-Supplier Mapping: Can a single product be sourced from multiple suppliers? The current assumption is 1 product = 1 supplier.
-Log Retention: How long should we keep data in the inventory_logs table before archiving it? High-volume systems will bloat this table quickly.
-3. Decisions & Justifications
-Junction Table (inventory): Designed to handle the Many-to-Many relationship between products and warehouses, which is the core requirement.
-Audit Trail (inventory_logs): Added to satisfy the "Track when inventory levels change" requirement without constantly overwriting historical data.
-Indexes: Added a UNIQUE constraint on (product_id, warehouse_id) to ensure data integrity and speed up lookups during API calls.
 
-Part 3: API Implementation (35 minutes)
-1. Implementation (Node.js / Express with SQL Query Builder)
-Language/Framework: Node.js with Express.js.
+Supplier Mapping: Can a single product be sourced from multiple suppliers? The current schema assumes 1 product = 1 primary supplier.
+
+Log Retention: How long should we keep data in the inventory_logs table before archiving it? High-volume systems will bloat this table very quickly.
+
+3. Decisions & Justifications
+Junction Table (inventory): Designed to handle the Many-to-Many relationship between products and warehouses, satisfying the core requirement of tracking items across multiple locations.
+
+Audit Trail (inventory_logs): Added to satisfy the "Track when inventory levels change" requirement without constantly overwriting historical data.
+
+Indexes: Added a UNIQUE constraint on (product_id, warehouse_id) to ensure data integrity and significantly speed up lookups during API calls.
+
+🚀 Part 3: API Implementation
+1. Implementation Overview
+Language/Framework: Node.js with Express.js
+
+Database Interface: Hypothetical SQL Query Builder (e.g., Knex.js)
+
 JavaScript
 const express = require('express');
 const router = express.Router();
-const db = require('../db'); // Hypothetical DB connection (e.g., Knex.js)
+const db = require('../db'); // Hypothetical DB connection instance
 
 /**
  * GET /api/companies/:company_id/alerts/low-stock
+ * Retrieves low-stock alerts for a specific company based on recent sales.
  */
 router.get('/api/companies/:company_id/alerts/low-stock', async (req, res) => {
     try {
         const { company_id } = req.params;
         const RECENT_SALES_DAYS = 30; // Business Rule: "Recent" defined as 30 days
 
-        // Fetching data joining inventory, warehouses, products, and suppliers
+        // Fetching data by joining inventory, warehouses, products, and suppliers
         const alertsData = await db('inventory as i')
             .join('warehouses as w', 'i.warehouse_id', 'w.id')
             .join('products as p', 'i.product_id', 'p.id')
@@ -167,9 +192,9 @@ router.get('/api/companies/:company_id/alerts/low-stock', async (req, res) => {
                 's.contact_email'
             );
 
-        // Map data to the expected JSON format
+        // Map data to the expected JSON response format
         const formattedAlerts = alertsData.map(row => {
-            // Calculate days until stockout safely
+            // Calculate days until stockout safely to avoid division by zero
             let daysUntilStockout = 0;
             if (row.avg_daily_sales > 0) {
                 daysUntilStockout = Math.max(0, Math.round(row.current_stock / row.avg_daily_sales));
@@ -188,7 +213,7 @@ router.get('/api/companies/:company_id/alerts/low-stock', async (req, res) => {
                     id: row.supplier_id,
                     name: row.supplier_name,
                     contact_email: row.contact_email
-                } : null // Handle case where a product has no supplier yet
+                } : null // Handle cases where a product has no supplier assigned yet
             };
         });
 
@@ -204,13 +229,16 @@ router.get('/api/companies/:company_id/alerts/low-stock', async (req, res) => {
 });
 
 module.exports = router;
-
 2. Edge Cases Handled
 Division by Zero: The days_until_stockout calculation handles cases where avg_daily_sales is 0 or null to prevent server crashes or returning NaN.
+
 Missing Suppliers: Used a LEFT JOIN for suppliers. If a product doesn't have a supplier assigned, the API won't drop the row; it will simply return null for the supplier object.
+
 Negative Stockout Days: Used Math.max(0, ...) to ensure we don't return negative days if the inventory somehow drops below zero.
+
 3. Documented Assumptions
 Recent Activity Definition: I assumed "recent sales activity" means sales within the last 30 days.
-Pre-calculated Analytics: Calculating avg_daily_sales dynamically on every API call is computationally expensive. I assumed there is a background Cron Job that calculates and updates avg_daily_sales on the inventory table periodically to keep this endpoint highly performant.
-Dynamic Threshold Location: I placed the low_stock_threshold on the inventory table rather than the products table, assuming that different warehouses might have different threshold needs for the exact same product.
 
+Pre-calculated Analytics: Calculating avg_daily_sales dynamically on every API call is computationally expensive. I assumed there is a background worker/cron job that calculates and updates avg_daily_sales on the inventory table periodically to keep this endpoint highly performant.
+
+Dynamic Threshold Location: I placed the low_stock_threshold on the inventory table rather than the products table, assuming that different warehouses might have different threshold needs for the exact same product.
